@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as htmlToImage from "html-to-image";
 import { jsPDF } from "jspdf";
 import { AnimatePresence, motion } from "framer-motion";
@@ -10,6 +10,9 @@ import {
   Activity,
   BarChart3,
   Bell,
+  ChevronDown,
+  ChevronUp,
+  ChevronsUpDown,
   Database,
   Download,
   FileText,
@@ -23,7 +26,6 @@ import {
   ShieldAlert,
   Sun,
   TrendingUp,
-  User,
   Utensils,
 } from "lucide-react";
 import type { FeedbackInsight, FeedbackPriority, FeedbackSentiment } from "@/types/feedback";
@@ -36,6 +38,8 @@ type DashboardShellProps = {
 };
 
 type TabId = "feedback" | "gacha" | "food";
+type SortField = "none" | "date" | "priority" | "sentiment" | "category";
+type SortDir = "asc" | "desc";
 
 type CountItem = {
   label: string;
@@ -86,6 +90,20 @@ const priorityStyles: Record<FeedbackPriority, string> = {
   High: "border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-400/30 dark:bg-orange-400/10 dark:text-orange-200",
   Medium: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-200",
   Low: "border-teal-200 bg-teal-50 text-teal-700 dark:border-teal-400/30 dark:bg-teal-400/10 dark:text-teal-200",
+};
+
+const priorityOrder: Record<FeedbackPriority, number> = {
+  Critical: 0,
+  High: 1,
+  Medium: 2,
+  Low: 3,
+};
+
+const sentimentOrder: Record<FeedbackSentiment, number> = {
+  Negative: 0,
+  Mixed: 1,
+  Neutral: 2,
+  Positive: 3,
 };
 
 const reportPalette = ["#0f766e", "#2563eb", "#d97706", "#7c3aed", "#be123c", "#475569"];
@@ -302,20 +320,19 @@ function ReportBar({ item, total, color, compact = false }: { item: CountItem; t
   );
 }
 
+// ─── Short Report — renders ONE page at a time to prevent lag ─────────────────
 function ShortReportPage({
   rows,
   total,
   stats,
-  page1Ref,
-  page2Ref,
-  page3Ref,
+  pageRef,
+  page,
 }: {
   rows: FeedbackInsight[];
   total: number;
   stats: ReportStats;
-  page1Ref: React.RefObject<HTMLDivElement | null>;
-  page2Ref: React.RefObject<HTMLDivElement | null>;
-  page3Ref: React.RefObject<HTMLDivElement | null>;
+  pageRef: React.RefObject<HTMLDivElement | null>;
+  page: 1 | 2 | 3;
 }) {
   const topRisks = rows
     .filter((item) => item.priority === "Critical" || item.priority === "High")
@@ -329,13 +346,13 @@ function ShortReportPage({
     timeStyle: "short",
   }).format(new Date());
 
-  const ReportHeader = ({ page }: { page: number }) => (
+  const ReportHeader = ({ p }: { p: number }) => (
     <div className="flex items-start justify-between border-b border-slate-200 pb-4">
       <div>
         <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-teal-700">Ai-Exam by BEST</p>
         <h1 className="mt-1 text-3xl font-bold tracking-tight">Player Feedback Short Report</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Generated {generatedAt} · Source table `player_feedback` · Page {page}/3
+          Generated {generatedAt} · Source table `player_feedback` · Page {p}/3
         </p>
       </div>
       <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-right">
@@ -347,168 +364,186 @@ function ShortReportPage({
   );
 
   return (
-    <div className="pointer-events-none fixed left-[-2000px] top-0 z-[-1] opacity-0 flex flex-col gap-10">
+    <div className="pointer-events-none fixed left-[-2000px] top-0 z-[-1] opacity-0">
       {/* Page 1: Overview */}
-      <div ref={page1Ref} className="h-[794px] w-[1123px] bg-white p-8 font-sans text-slate-900">
-        <ReportHeader page={1} />
-        
-        <div className="mt-6 space-y-6">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-6">
-            <h2 className="text-lg font-bold text-amber-950 mb-2">1. Executive Summary</h2>
-            <p className="text-sm leading-6 text-amber-950">
-              Highest volume topic is <b>{stats.topCategory}</b>. Negative or mixed feedback accounts for{" "}
-              <b>{formatPercent(stats.negativeCount + stats.mixedCount, rows.length)}</b>, while{" "}
-              <b>{formatPercent(stats.highPriorityCount, rows.length)}</b> of visible items are Critical/High.
-              First-pass ownership should start with <b>{stats.topOwner}</b>, then route category-specific queues.
-            </p>
-          </div>
+      {page === 1 && (
+        <div ref={pageRef} className="h-[794px] w-[1123px] bg-white p-8 font-sans text-slate-900">
+          <ReportHeader p={1} />
 
-          <div>
-            <h2 className="text-lg font-bold text-slate-900 mb-4">2. Feedback Overview</h2>
-            <div className="grid grid-cols-4 gap-4">
-              {[
-                ["Total Feedback", rows.length.toLocaleString(), `${formatPercent(rows.length, total)} of loaded dataset`],
-                ["Critical / High", stats.highPriorityCount.toLocaleString(), `${formatPercent(stats.highPriorityCount, rows.length)} need fast triage`],
-                ["Negative Share", stats.negativeCount.toLocaleString(), `${formatPercent(stats.negativeCount, rows.length)} negative records`],
-                ["Top Owner", stats.topOwner, `${topOwners[0]?.count ?? 0} routed items`],
-              ].map(([label, value, detail]) => (
-                <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-4 flex flex-col justify-center">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">{label}</p>
-                  <p className="mt-2 text-2xl font-bold text-slate-950 leading-tight">{value}</p>
-                  <p className="mt-2 text-xs text-slate-500">{detail}</p>
-                </div>
-              ))}
+          <div className="mt-6 space-y-6">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-6">
+              <h2 className="text-lg font-bold text-amber-950 mb-2">1. Executive Summary</h2>
+              <p className="text-sm leading-6 text-amber-950">
+                Highest volume topic is <b>{stats.topCategory}</b>. Negative or mixed feedback accounts for{" "}
+                <b>{formatPercent(stats.negativeCount + stats.mixedCount, rows.length)}</b>, while{" "}
+                <b>{formatPercent(stats.highPriorityCount, rows.length)}</b> of visible items are Critical/High.
+                First-pass ownership should start with <b>{stats.topOwner}</b>, then route category-specific queues.
+              </p>
             </div>
-          </div>
 
-          <div>
-            <h2 className="text-lg font-bold text-slate-900 mb-4">4. Sentiment Summary</h2>
-            <div className="grid grid-cols-2 gap-6">
-              <div className="rounded-lg border border-slate-200 p-5">
-                <h3 className="text-sm font-bold mb-4">Sentiment Breakdown</h3>
-                <div className="space-y-4">
-                  {topSentiments.map((item, index) => (
-                    <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index]} compact />
-                  ))}
-                </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 mb-4">2. Feedback Overview</h2>
+              <div className="grid grid-cols-4 gap-4">
+                {[
+                  ["Total Feedback", rows.length.toLocaleString(), `${formatPercent(rows.length, total)} of loaded dataset`],
+                  ["Critical / High", stats.highPriorityCount.toLocaleString(), `${formatPercent(stats.highPriorityCount, rows.length)} need fast triage`],
+                  ["Negative Share", stats.negativeCount.toLocaleString(), `${formatPercent(stats.negativeCount, rows.length)} negative records`],
+                  ["Top Owner", stats.topOwner, `${topOwners[0]?.count ?? 0} routed items`],
+                ].map(([label, value, detail]) => (
+                  <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-4 flex flex-col justify-center">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">{label}</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-950 leading-tight">{value}</p>
+                    <p className="mt-2 text-xs text-slate-500">{detail}</p>
+                  </div>
+                ))}
               </div>
-              <div className="rounded-lg border border-slate-200 p-5">
-                <h3 className="text-sm font-bold mb-4">Priority Breakdown</h3>
-                <div className="space-y-4">
-                  {topPriorities.map((item, index) => (
-                    <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index + 2]} compact />
-                  ))}
+            </div>
+
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 mb-4">4. Sentiment Summary</h2>
+              <div className="grid grid-cols-2 gap-6">
+                <div className="rounded-lg border border-slate-200 p-5">
+                  <h3 className="text-sm font-bold mb-4">Sentiment Breakdown</h3>
+                  <div className="space-y-4">
+                    {topSentiments.map((item, index) => (
+                      <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index]} compact />
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-5">
+                  <h3 className="text-sm font-bold mb-4">Priority Breakdown</h3>
+                  <div className="space-y-4">
+                    {topPriorities.map((item, index) => (
+                      <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index + 2]} compact />
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Page 2: Deep Dive */}
-      <div ref={page2Ref} className="h-[794px] w-[1123px] bg-white p-8 font-sans text-slate-900">
-        <ReportHeader page={2} />
-        
-        <div className="mt-6 grid grid-cols-[1fr_300px] gap-6">
-          <div className="flex flex-col gap-6">
-            <div className="rounded-lg border border-rose-200 bg-rose-50 p-6 flex-1">
-              <h2 className="text-lg font-bold text-rose-950 mb-4">3. Top 5 Issues (Critical & High Risk)</h2>
-              <div className="space-y-4">
-                {topRisks.length > 0 ? (
-                  topRisks.map((item) => (
-                    <div key={item.id} className="border-b border-rose-200/50 pb-3 last:border-b-0 last:pb-0 bg-white/50 rounded-lg p-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-rose-950">
-                          {item.id} · {item.priority} · {item.category}
-                        </p>
-                        <span className="text-[10px] text-rose-800 font-semibold">{item.suggestedOwner}</span>
+      {page === 2 && (
+        <div ref={pageRef} className="h-[794px] w-[1123px] bg-white p-8 font-sans text-slate-900">
+          <ReportHeader p={2} />
+
+          <div className="mt-6 grid grid-cols-[1fr_300px] gap-6">
+            <div className="flex flex-col gap-6">
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-6 flex-1">
+                <h2 className="text-lg font-bold text-rose-950 mb-4">3. Top 5 Issues (Critical &amp; High Risk)</h2>
+                <div className="space-y-4">
+                  {topRisks.length > 0 ? (
+                    topRisks.map((item) => (
+                      <div key={item.id} className="border-b border-rose-200/50 pb-3 last:border-b-0 last:pb-0 bg-white/50 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-bold text-rose-950">
+                            {item.id} · {item.priority} · {item.category}
+                          </p>
+                          <span className="text-[10px] text-rose-800 font-semibold">{item.suggestedOwner}</span>
+                        </div>
+                        <p className="mt-2 text-sm leading-5 text-rose-900">{item.aiSummary}</p>
+                        <p className="mt-1 text-xs text-rose-700/80 italic">"{truncate(item.feedback, 120)}"</p>
                       </div>
-                      <p className="mt-2 text-sm leading-5 text-rose-900">{item.aiSummary}</p>
-                      <p className="mt-1 text-xs text-rose-700/80 italic">"{truncate(item.feedback, 120)}"</p>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-rose-900">No critical or high issues found.</p>
-                )}
+                    ))
+                  ) : (
+                    <p className="text-sm text-rose-900">No critical or high issues found.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-6">
+              <div className="rounded-lg border border-orange-200 bg-orange-50 p-6">
+                <h2 className="text-lg font-bold text-orange-950 mb-4">6. Risk / Things to Watch</h2>
+                <p className="text-sm leading-6 text-orange-950">
+                  The volume of <b>{stats.topCategory}</b> issues represents the highest engagement risk.
+                  With {stats.highPriorityCount} critical/high priority items overall, immediate review is required.
+                  Watch for sudden spikes in negative sentiment within <b>{topCategories[1]?.label ?? "other areas"}</b>.
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-teal-200 bg-teal-50 p-6 flex-1">
+                <h2 className="text-lg font-bold text-teal-950 mb-4">5. Recommended Actions</h2>
+                <ol className="space-y-3 text-sm leading-6 text-teal-950 list-decimal pl-4">
+                  <li>Review Critical/High items with <b>{stats.topOwner}</b> within the next sprint triage.</li>
+                  <li>Convert the top category (<b>{stats.topCategory}</b>) into a tracked issue theme with owner and due date.</li>
+                  <li>Close the loop in community/support for repeated player pain points to manage expectations.</li>
+                </ol>
               </div>
             </div>
           </div>
-
-          <div className="flex flex-col gap-6">
-            <div className="rounded-lg border border-orange-200 bg-orange-50 p-6">
-              <h2 className="text-lg font-bold text-orange-950 mb-4">6. Risk / Things to Watch</h2>
-              <p className="text-sm leading-6 text-orange-950">
-                The volume of <b>{stats.topCategory}</b> issues represents the highest engagement risk.
-                With {stats.highPriorityCount} critical/high priority items overall, immediate review is required.
-                Watch for sudden spikes in negative sentiment within <b>{topCategories[1]?.label ?? "other areas"}</b>.
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-teal-200 bg-teal-50 p-6 flex-1">
-              <h2 className="text-lg font-bold text-teal-950 mb-4">5. Recommended Actions</h2>
-              <ol className="space-y-3 text-sm leading-6 text-teal-950 list-decimal pl-4">
-                <li>Review Critical/High items with <b>{stats.topOwner}</b> within the next sprint triage.</li>
-                <li>Convert the top category (<b>{stats.topCategory}</b>) into a tracked issue theme with owner and due date.</li>
-                <li>Close the loop in community/support for repeated player pain points to manage expectations.</li>
-              </ol>
-            </div>
-          </div>
         </div>
-      </div>
+      )}
 
       {/* Page 3: Appendix */}
-      <div ref={page3Ref} className="h-[794px] w-[1123px] bg-white p-8 font-sans text-slate-900">
-        <ReportHeader page={3} />
-        
-        <div className="mt-6 grid grid-cols-2 gap-6">
-          <div className="space-y-6">
-            <div className="rounded-lg border border-slate-200 p-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">7. Appendix: Category Breakdown</h2>
-              <div className="space-y-4">
-                {topCategories.map((item, index) => (
-                  <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index % reportPalette.length]} />
-                ))}
-              </div>
-            </div>
-            
-            <div className="rounded-lg border border-slate-200 p-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">7. Appendix: Suggested Owner Distribution</h2>
-              <div className="space-y-4">
-                {topOwners.map((item, index) => (
-                  <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index % reportPalette.length]} />
-                ))}
-              </div>
-            </div>
-          </div>
+      {page === 3 && (
+        <div ref={pageRef} className="h-[794px] w-[1123px] bg-white p-8 font-sans text-slate-900">
+          <ReportHeader p={3} />
 
-          <div className="space-y-6">
-            <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-6">
-              <h2 className="text-lg font-bold text-indigo-950 mb-4">8. Workflow Note</h2>
-              <div className="space-y-4 text-sm leading-6 text-indigo-950">
-                <p>
-                  <b>Triage Cadence:</b> This report is generated as a snapshot of player feedback. It should be reviewed during weekly or bi-weekly sprint planning sessions.
-                </p>
-                <p>
-                  <b>Escalation Path:</b> Any feedback marked as "Critical" should bypass the normal triage queue and be reported directly to the on-call engineer or lead.
-                </p>
-                <p>
-                  <b>Closing the Loop:</b> Once fixes are deployed, coordinate with Community Management to update players on the resolved issues.
-                </p>
+          <div className="mt-6 grid grid-cols-2 gap-6">
+            <div className="space-y-6">
+              <div className="rounded-lg border border-slate-200 p-6">
+                <h2 className="text-lg font-bold text-slate-900 mb-4">7. Appendix: Category Breakdown</h2>
+                <div className="space-y-4">
+                  {topCategories.map((item, index) => (
+                    <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index % reportPalette.length]} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 p-6">
+                <h2 className="text-lg font-bold text-slate-900 mb-4">7. Appendix: Suggested Owner Distribution</h2>
+                <div className="space-y-4">
+                  {topOwners.map((item, index) => (
+                    <ReportBar key={item.label} item={item} total={rows.length} color={reportPalette[index % reportPalette.length]} />
+                  ))}
+                </div>
               </div>
             </div>
 
-            <div className="rounded-lg border border-slate-200 p-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Data Notes & Methodology</h2>
-              <p className="text-sm leading-6 text-slate-600">
-                This report reflects the current dashboard filters at the time of export. Data categorization, sentiment analysis, priority assignment, summary generation, and owner routing are automated. Fields are normalized from Supabase records when present; otherwise, they are classified dynamically from raw feedback text.
-              </p>
+            <div className="space-y-6">
+              <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-6">
+                <h2 className="text-lg font-bold text-indigo-950 mb-4">8. Workflow Note</h2>
+                <div className="space-y-4 text-sm leading-6 text-indigo-950">
+                  <p>
+                    <b>Triage Cadence:</b> This report is generated as a snapshot of player feedback. It should be reviewed during weekly or bi-weekly sprint planning sessions.
+                  </p>
+                  <p>
+                    <b>Escalation Path:</b> Any feedback marked as "Critical" should bypass the normal triage queue and be reported directly to the on-call engineer or lead.
+                  </p>
+                  <p>
+                    <b>Closing the Loop:</b> Once fixes are deployed, coordinate with Community Management to update players on the resolved issues.
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 p-6">
+                <h2 className="text-lg font-bold text-slate-900 mb-4">Data Notes &amp; Methodology</h2>
+                <p className="text-sm leading-6 text-slate-600">
+                  This report reflects the current dashboard filters at the time of export. Data categorization, sentiment analysis, priority assignment, summary generation, and owner routing are automated. Fields are normalized from Supabase records when present; otherwise, they are classified dynamically from raw feedback text.
+                </p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
+
+// ─── Sort Icon helper ─────────────────────────────────────────────────────────
+function SortIcon({ field, sortField, sortDir }: { field: SortField; sortField: SortField; sortDir: SortDir }) {
+  if (field !== sortField) return <ChevronsUpDown className="h-3 w-3 text-slate-400" />;
+  return sortDir === "asc" ? (
+    <ChevronUp className="h-3 w-3 text-teal-500" />
+  ) : (
+    <ChevronDown className="h-3 w-3 text-teal-500" />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function FeedbackDashboard({
   rows,
@@ -518,6 +553,10 @@ function FeedbackDashboard({
   categoryOptions,
   categoryFilter,
   setCategoryFilter,
+  sortField,
+  sortDir,
+  setSortField,
+  setSortDir,
 }: {
   rows: FeedbackInsight[];
   total: number;
@@ -526,7 +565,27 @@ function FeedbackDashboard({
   categoryOptions: CountItem[];
   categoryFilter: string;
   setCategoryFilter: (category: string) => void;
+  sortField: SortField;
+  sortDir: SortDir;
+  setSortField: (field: SortField) => void;
+  setSortDir: (dir: SortDir) => void;
 }) {
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  };
+
+  const sortOptions: { field: SortField; label: string }[] = [
+    { field: "priority", label: "Priority" },
+    { field: "sentiment", label: "Sentiment" },
+    { field: "category", label: "Category" },
+    { field: "date", label: "Date" },
+  ];
+
   return (
     <div className="space-y-6">
       {error ? (
@@ -702,23 +761,96 @@ function FeedbackDashboard({
         animate="show"
         className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:shadow-none"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
-          <div>
-            <h2 className="text-base font-semibold text-slate-950 dark:text-slate-50">Feedback Queue</h2>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Feedback + Category + Sentiment + Priority + AI Summary + Suggested Owner
+        {/* Queue header */}
+        <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-950 dark:text-slate-50">Feedback Queue</h2>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Feedback + Category + Sentiment + Priority + AI Summary + Suggested Owner
+              </p>
+            </div>
+            <p className="text-sm font-medium text-slate-500 dark:text-slate-400">
+              Showing top {Math.min(rows.length, 100).toLocaleString()} of {rows.length.toLocaleString()} rows
             </p>
           </div>
-          <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Showing top {Math.min(rows.length, 100).toLocaleString()} of {rows.length.toLocaleString()} rows</p>
+
+          {/* Sort bar */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-500">
+              Sort by
+            </span>
+            {sortOptions.map((opt) => {
+              const isActive = sortField === opt.field;
+              return (
+                <motion.button
+                  key={opt.field}
+                  type="button"
+                  onClick={() => handleSort(opt.field)}
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.96 }}
+                  transition={{ type: "spring", stiffness: 400, damping: 22 }}
+                  className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition ${
+                    isActive
+                      ? "border-teal-300 bg-teal-50 text-teal-700 dark:border-teal-500/40 dark:bg-teal-500/10 dark:text-teal-300"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700"
+                  }`}
+                >
+                  {opt.label}
+                  <SortIcon field={opt.field} sortField={sortField} sortDir={sortDir} />
+                </motion.button>
+              );
+            })}
+            {sortField !== "none" && (
+              <motion.button
+                type="button"
+                onClick={() => { setSortField("none"); setSortDir("desc"); }}
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
+                transition={{ type: "spring", stiffness: 400, damping: 22 }}
+                className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-100 dark:border-rose-400/30 dark:bg-rose-400/10 dark:text-rose-300"
+              >
+                Clear sort
+              </motion.button>
+            )}
+          </div>
         </div>
+
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1160px] text-left text-sm">
             <thead className="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-400">
               <tr>
                 <th className="px-5 py-3">Feedback</th>
-                <th className="px-5 py-3">Category</th>
-                <th className="px-5 py-3">Sentiment</th>
-                <th className="px-5 py-3">Priority</th>
+                <th className="px-5 py-3">
+                  <button
+                    type="button"
+                    onClick={() => handleSort("category")}
+                    className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
+                  >
+                    Category
+                    <SortIcon field="category" sortField={sortField} sortDir={sortDir} />
+                  </button>
+                </th>
+                <th className="px-5 py-3">
+                  <button
+                    type="button"
+                    onClick={() => handleSort("sentiment")}
+                    className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
+                  >
+                    Sentiment
+                    <SortIcon field="sentiment" sortField={sortField} sortDir={sortDir} />
+                  </button>
+                </th>
+                <th className="px-5 py-3">
+                  <button
+                    type="button"
+                    onClick={() => handleSort("priority")}
+                    className="inline-flex items-center gap-1 hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
+                  >
+                    Priority
+                    <SortIcon field="priority" sortField={sortField} sortDir={sortDir} />
+                  </button>
+                </th>
                 <th className="px-5 py-3">AI Summary</th>
                 <th className="px-5 py-3">Suggested Owner</th>
               </tr>
@@ -798,19 +930,20 @@ function PlaceholderPanel({ activeTab }: { activeTab: TabId }) {
 export default function DashboardShell({ feedback, total, error, activeTab = "feedback" }: DashboardShellProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sortField, setSortField] = useState<SortField>("none");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [reportPage, setReportPage] = useState<0 | 1 | 2 | 3>(0);
   const [isDarkMode, setIsDarkMode] = useState(() => getInitialDarkMode());
   const [isClient, setIsClient] = useState(false);
-  const page1Ref = useRef<HTMLDivElement | null>(null);
-  const page2Ref = useRef<HTMLDivElement | null>(null);
-  const page3Ref = useRef<HTMLDivElement | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
   const categoryOptions = useMemo(() => countBy(feedback, (item) => item.category), [feedback]);
 
   // Initialize dark mode from localStorage after mount
   useEffect(() => {
     setIsClient(true);
     const savedTheme = window.localStorage.getItem("exam-ai-theme");
-    
+
     if (savedTheme === "dark") {
       setIsDarkMode(true);
     } else if (savedTheme === "white") {
@@ -826,7 +959,17 @@ export default function DashboardShell({ feedback, total, error, activeTab = "fe
     }
   }, [isDarkMode, isClient]);
 
+  // Reset search + sort when switching tabs
+  useEffect(() => {
+    setSearchTerm("");
+    setCategoryFilter("all");
+    setSortField("none");
+    setSortDir("desc");
+  }, [activeTab]);
+
   const filteredFeedback = useMemo(() => {
+    if (activeTab !== "feedback") return [];
+
     const search = searchTerm.trim().toLowerCase();
 
     return feedback.filter((item) => {
@@ -851,72 +994,88 @@ export default function DashboardShell({ feedback, total, error, activeTab = "fe
 
       return matchesSearch && matchesCategory;
     });
-  }, [categoryFilter, feedback, searchTerm]);
+  }, [activeTab, categoryFilter, feedback, searchTerm]);
+
+  // Sorted view (sort doesn't affect stats)
+  const sortedFeedback = useMemo(() => {
+    if (sortField === "none") return filteredFeedback;
+
+    return [...filteredFeedback].sort((a, b) => {
+      let cmp = 0;
+      if (sortField === "priority") {
+        cmp = priorityOrder[a.priority] - priorityOrder[b.priority];
+      } else if (sortField === "sentiment") {
+        cmp = sentimentOrder[a.sentiment] - sentimentOrder[b.sentiment];
+      } else if (sortField === "category") {
+        cmp = a.category.localeCompare(b.category);
+      } else if (sortField === "date") {
+        cmp = (a.date ?? "").localeCompare(b.date ?? "");
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [filteredFeedback, sortField, sortDir]);
 
   const stats = useMemo(() => getStats(filteredFeedback), [filteredFeedback]);
 
-  const handleOpenReport = async () => {
-    if (isGeneratingPdf) {
-      return;
-    }
-
+  // Sequential page-by-page capture — prevents lag from rendering all 3 DOM trees at once
+  const handleOpenReport = useCallback(async () => {
+    if (isGeneratingPdf) return;
     setIsGeneratingPdf(true);
 
-    // Wait for React to mount the ShortReportPage component
-    setTimeout(async () => {
-      try {
-        if (!page1Ref.current || !page2Ref.current || !page3Ref.current) {
-          throw new Error("Report pages not mounted");
-        }
+    const captureOptions = {
+      backgroundColor: "#ffffff",
+      pixelRatio: 1.2,
+      quality: 0.92,
+    };
 
-        await document.fonts.ready;
-        
-        const pdf = new jsPDF({
-          orientation: "landscape",
-          unit: "mm",
-          format: "a4",
-          compress: true,
-        });
+    try {
+      const pdf = new jsPDF({
+        orientation: "landscape",
+        unit: "mm",
+        format: "a4",
+        compress: true,
+      });
 
-        const options = {
-          backgroundColor: "#ffffff",
-          pixelRatio: 1.5, // Reduced for faster generation
-          quality: 0.95,
-        };
+      await document.fonts.ready;
 
-        // Capture Page 1
-        const image1 = await htmlToImage.toJpeg(page1Ref.current, options);
-        pdf.addImage(image1, "JPEG", 0, 0, 297, 210);
-        
-        await new Promise((r) => setTimeout(r, 50)); // Yield to main thread
-        
-        // Capture Page 2
-        const image2 = await htmlToImage.toJpeg(page2Ref.current, options);
-        pdf.addPage();
-        pdf.addImage(image2, "JPEG", 0, 0, 297, 210);
+      // ── Page 1 ──────────────────────────────────────────────
+      setReportPage(1);
+      await new Promise((r) => setTimeout(r, 160));
+      if (!pageRef.current) throw new Error("Report page 1 not mounted");
+      const image1 = await htmlToImage.toJpeg(pageRef.current, captureOptions);
+      pdf.addImage(image1, "JPEG", 0, 0, 297, 210);
 
-        await new Promise((r) => setTimeout(r, 50)); // Yield to main thread
+      // ── Page 2 ──────────────────────────────────────────────
+      setReportPage(2);
+      await new Promise((r) => setTimeout(r, 120));
+      if (!pageRef.current) throw new Error("Report page 2 not mounted");
+      const image2 = await htmlToImage.toJpeg(pageRef.current, captureOptions);
+      pdf.addPage();
+      pdf.addImage(image2, "JPEG", 0, 0, 297, 210);
 
-        // Capture Page 3
-        const image3 = await htmlToImage.toJpeg(page3Ref.current, options);
-        pdf.addPage();
-        pdf.addImage(image3, "JPEG", 0, 0, 297, 210);
+      // ── Page 3 ──────────────────────────────────────────────
+      setReportPage(3);
+      await new Promise((r) => setTimeout(r, 120));
+      if (!pageRef.current) throw new Error("Report page 3 not mounted");
+      const image3 = await htmlToImage.toJpeg(pageRef.current, captureOptions);
+      pdf.addPage();
+      pdf.addImage(image3, "JPEG", 0, 0, 297, 210);
 
-        // Open PDF in new browser tab instead of downloading
-        const pdfBlob = pdf.output("blob");
-        const pdfUrl = URL.createObjectURL(pdfBlob);
-        window.open(pdfUrl, "_blank");
-        
-        // Clean up the URL after a delay
-        setTimeout(() => URL.revokeObjectURL(pdfUrl), 100);
-      } catch (error) {
-        console.error("Failed to generate PDF:", error);
-        alert("Failed to generate report. Please try again.");
-      } finally {
-        setIsGeneratingPdf(false);
-      }
-    }, 100); // 100ms delay to ensure DOM is ready
-  };
+      // Open in new tab
+      const pdfBlob = pdf.output("blob");
+      const pdfUrl = URL.createObjectURL(pdfBlob);
+      window.open(pdfUrl, "_blank");
+      setTimeout(() => URL.revokeObjectURL(pdfUrl), 100);
+    } catch (err) {
+      console.error("Failed to generate PDF:", err);
+      alert("Failed to generate report. Please try again.");
+    } finally {
+      setReportPage(0);
+      setIsGeneratingPdf(false);
+    }
+  }, [isGeneratingPdf]);
+
+  const isFeedbackTab = activeTab === "feedback";
 
   return (
     <div className={`${isDarkMode ? "dark" : ""} min-h-screen bg-slate-100 text-slate-900 selection:bg-teal-200 dark:bg-slate-950 dark:text-slate-100 dark:selection:bg-teal-500/30`}>
@@ -988,16 +1147,27 @@ export default function DashboardShell({ feedback, total, error, activeTab = "fe
 
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-30 flex min-h-20 flex-col gap-4 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur md:flex-row md:items-center md:justify-between lg:px-8 dark:border-slate-800 dark:bg-slate-950/90">
+            {/* Search — visible only on feedback tab */}
             <div className="relative w-full md:max-w-xl">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search feedback, owner, priority..."
-                className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-teal-400 dark:focus:ring-teal-400/10"
-              />
+              {isFeedbackTab ? (
+                <>
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Search feedback, owner, priority…"
+                    className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-teal-400 dark:focus:ring-teal-400/10"
+                  />
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
+                  <Search className="h-4 w-4" />
+                  <span>Search available on Feedback tab</span>
+                </div>
+              )}
             </div>
+
             <div className="flex items-center gap-2">
               <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-800 dark:bg-slate-900" aria-label="Theme mode">
                 <button
@@ -1042,28 +1212,33 @@ export default function DashboardShell({ feedback, total, error, activeTab = "fe
                 </motion.span>
                 Refresh
               </motion.button>
-              <motion.button
-                type="button"
-                onClick={handleOpenReport}
-                disabled={isGeneratingPdf}
-                whileHover={!isGeneratingPdf ? { scale: 1.05, boxShadow: "0 4px 14px rgba(15,118,110,0.35)" } : {}}
-                whileTap={!isGeneratingPdf ? { scale: 0.96 } : {}}
-                transition={{ type: "spring", stiffness: 400, damping: 22 }}
-                className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-              >
-                {isGeneratingPdf ? (
-                  <motion.span
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                    className="inline-flex"
-                  >
-                    <Download className="h-4 w-4" />
-                  </motion.span>
-                ) : (
-                  <FileText className="h-4 w-4" />
-                )}
-                {isGeneratingPdf ? "Generating..." : "Report"}
-              </motion.button>
+
+              {/* Report button — only on feedback tab */}
+              {isFeedbackTab && (
+                <motion.button
+                  type="button"
+                  onClick={handleOpenReport}
+                  disabled={isGeneratingPdf}
+                  whileHover={!isGeneratingPdf ? { scale: 1.05, boxShadow: "0 4px 14px rgba(15,118,110,0.35)" } : {}}
+                  whileTap={!isGeneratingPdf ? { scale: 0.96 } : {}}
+                  transition={{ type: "spring", stiffness: 400, damping: 22 }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                >
+                  {isGeneratingPdf ? (
+                    <motion.span
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                      className="inline-flex"
+                    >
+                      <Download className="h-4 w-4" />
+                    </motion.span>
+                  ) : (
+                    <FileText className="h-4 w-4" />
+                  )}
+                  {isGeneratingPdf ? `Generating page ${reportPage}/3…` : "Report"}
+                </motion.button>
+              )}
+
               <motion.button
                 whileHover={{ scale: 1.1, rotate: 12 }}
                 whileTap={{ scale: 0.9 }}
@@ -1131,20 +1306,26 @@ export default function DashboardShell({ feedback, total, error, activeTab = "fe
                       {tabs.find((tab) => tab.id === activeTab)?.label}
                     </motion.h1>
                     <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-                      Live feedback triage dashboard with category, sentiment, priority, AI summary, and owner routing.
+                      {isFeedbackTab
+                        ? "Live feedback triage dashboard with category, sentiment, priority, AI summary, and owner routing."
+                        : "This section is currently under development. Check back soon."}
                     </p>
                   </div>
                 </motion.div>
 
-                {activeTab === "feedback" ? (
+                {isFeedbackTab ? (
                   <FeedbackDashboard
-                    rows={filteredFeedback}
+                    rows={sortedFeedback}
                     total={total}
                     error={error}
                     stats={stats}
                     categoryOptions={categoryOptions}
                     categoryFilter={categoryFilter}
                     setCategoryFilter={setCategoryFilter}
+                    sortField={sortField}
+                    sortDir={sortDir}
+                    setSortField={setSortField}
+                    setSortDir={setSortDir}
                   />
                 ) : (
                   <PlaceholderPanel activeTab={activeTab as TabId} />
@@ -1153,8 +1334,15 @@ export default function DashboardShell({ feedback, total, error, activeTab = "fe
             </AnimatePresence>
           </div>
 
-          {isGeneratingPdf && (
-            <ShortReportPage rows={filteredFeedback} total={total} stats={stats} page1Ref={page1Ref} page2Ref={page2Ref} page3Ref={page3Ref} />
+          {/* Short Report — only one page rendered at a time */}
+          {reportPage > 0 && (
+            <ShortReportPage
+              rows={filteredFeedback}
+              total={total}
+              stats={stats}
+              pageRef={pageRef}
+              page={reportPage as 1 | 2 | 3}
+            />
           )}
         </main>
       </div>
